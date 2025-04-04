@@ -1,194 +1,194 @@
-request from frontend
-export const fetchAllFilteredProducts = createAsyncThunk(
-  "/products/fetchAllProducts",
-  async ({ filterParams, sortParams }) => {
-    console.log(fetchAllFilteredProducts, "fetchAllFilteredProducts");
-
-    const query = new URLSearchParams({
-      ...filterParams,
-      sortBy: sortParams,
-    });
-
-    const result = await axios.get(
-      `http://localhost:8080/api/product/get?${query}`
+request from frontend for add to cart
+export const addToCart = createAsyncThunk(
+  "cart/addToCart",
+  async ({ userId, productId, quantity }) => {
+    const response = await axios.post(
+      "http://localhost:8080/api/cart/add",
+      {
+        productId,
+        quantity,
+      },{
+        withCredentials: true
+      }
     );
-
-    console.log(result);
-
-    return result?.data;
+    return response.data;
   }
 );
 
-how it is to handled in backend node
-
-const getFilteredProducts = async (req, res) => {
+node js implementation for add to cart
+const addToCart = async (req, res) => {
   try {
-    const { category = [], brand = [], sortBy = "price-lowtohigh" } = req.query;
+    const { userId, productId, quantity } = req.body;
 
-    let filters = {};
-
-    if (category.length) {
-      filters.category = { $in: category.split(",") };
+    if (!userId || !productId || quantity <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid data provided!",
+      });
     }
 
-    if (brand.length) {
-      filters.brand = { $in: brand.split(",") };
+    const product = await Product.findById(productId);
+
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
     }
 
-    let sort = {};
+    let cart = await Cart.findOne({ userId });
 
-    switch (sortBy) {
-      case "price-lowtohigh":
-        sort.price = 1;
-
-        break;
-      case "price-hightolow":
-        sort.price = -1;
-
-        break;
-      case "title-atoz":
-        sort.title = 1;
-
-        break;
-
-      case "title-ztoa":
-        sort.title = -1;
-
-        break;
-
-      default:
-        sort.price = 1;
-        break;
+    if (!cart) {
+      cart = new Cart({ userId, items: [] });
     }
 
-    const products = await Product.find(filters).sort(sort);
+    const findCurrentProductIndex = cart.items.findIndex(
+      (item) => item.productId.toString() === productId
+    );
 
+    if (findCurrentProductIndex === -1) {
+      cart.items.push({ productId, quantity });
+    } else {
+      cart.items[findCurrentProductIndex].quantity += quantity;
+    }
+
+    await cart.save();
     res.status(200).json({
       success: true,
-      data: products,
+      data: cart,
     });
-  } catch (e) {
+  } catch (error) {
     console.log(error);
     res.status(500).json({
       success: false,
-      message: "Some error occured",
+      message: "Error",
     });
   }
 };
 
+my implementation of add to cart using spring boot
+@PostMapping("/add")
+    public ResponseEntity<?> AddProduct(@CookieValue(value = "token",defaultValue = "")String token, Map<String ,String> credentials){
+        return cartServices.addProduct(credentials.get("productId"),credentials.get("quantity"),token);
+    }
 
-how i handled it in sprinboot
-public ResponseEntity<?> getProducts(List<String> category,List<String> brand,String sortBy) {
-        Query query = new Query();
+    public ResponseEntity<?> addProduct(String productId,String quantity,String authHeader) {
+        UserEntity user = userByToken.userDetails(authHeader);
 
-        if(category!=null && !category.isEmpty()){
-            query.addCriteria(Criteria.where("category").in(category));
+        Map<String,Object> responseBody = new HashMap<>();
+
+        if(productId.isEmpty() || quantity.isEmpty()){
+            responseBody.put("success",false);
+            responseBody.put("message","Invalid data provided!");
+            return new ResponseEntity<>(responseBody,HttpStatus.BAD_REQUEST);
         }
 
-        if(brand!=null && !brand.isEmpty()){
-            query.addCriteria(Criteria.where("brand").in(brand));
+        CartEntity cart = cartRepo.findByUser(user);
+
+        if(cart == null){
+            cart = CartEntity.builder()
+                    .user(user)
+                    .products(new ArrayList<>())
+                    .build();
+            cartRepo.save(cart);
+            user.setCart(cart);
+            userRepo.save(user);
         }
 
-        Sort sort = Sort.by(Sort.Direction.ASC,"price");
+        Optional<ProductEntity> product = productRepo.findById(productId);
 
-        sort = switch (sortBy) {
-            case "price-hightolow" -> Sort.by(Sort.Direction.DESC, "price");
-            case "title-atoz" -> Sort.by(Sort.Direction.ASC, "title");
-            case "title-ztoa" -> Sort.by(Sort.Direction.DESC, "title");
-            default -> sort;
-        };
+        if(product.isEmpty()){
+            responseBody.put("success",false);
+            responseBody.put("message","Product not found");
+            return new ResponseEntity<>(responseBody,HttpStatus.NOT_FOUND);
+        }
 
-        query.with(sort);
+        List<CartItemClass> products = cart.getProducts();
 
-        List<ProductEntity> products = productRepo.find(query);
+        boolean present=false;
 
-        Map<String, Object> responseBody = new HashMap<>();
+        CartItemClass newItem = null;
+
+        //if product is already present inside the cart
+        for(CartItemClass prod: products){
+            if(prod.getProduct().getId().equals(product.get().getId())){
+                prod.setQuantity(prod.getQuantity()+Integer.parseInt(quantity));
+                present=true;
+                newItem=prod;
+                break;
+            }
+        }
+
+        if(!present) {
+            CartItemClass item = CartItemClass.builder()
+                    .product(product.get())
+                    .productId(productId)
+                    .quantity(Integer.parseInt(quantity))
+                    .title(product.get().getTitle())
+                    .image(product.get().getImage())
+                    .price(product.get().getPrice())
+                    .salePrice(product.get().getSalePrice())
+                    .build();
+            cart.getProducts().add(item);
+            newItem=item;
+        }
+
+        cartRepo.save(cart);
+
         responseBody.put("success",true);
-        responseBody.put("data",products);
+        responseBody.put("data",cart);
 
         return new ResponseEntity<>(responseBody, HttpStatus.OK);
     }
 
-even extended the interface in my repo
-public interface ProductRepo extends MongoRepository<ProductEntity,String>, QuerydslPredicateExecutor<ProductEntity> {
-
-    List<ProductEntity> find(Query query);
-
-    ProductEntity findByTitle(String title);
-
-    List<ProductEntity> findByCategory(String category);
-
-}
-
-and added the dependencies
-
-<dependency>
-			<groupId>com.querydsl</groupId>
-			<artifactId>querydsl-mongodb</artifactId>
-			<version>4.4.0</version>
-		</dependency>
-		<dependency>
-			<groupId>com.querydsl</groupId>
-			<artifactId>querydsl-apt</artifactId>
-			<version>4.4.0</version>
-			<scope>provided</scope>
-		</dependency>
-
-but getting the error 
- Error creating bean with name 'publicEPServices': Unsatisfied dependency expressed through field 'productRepo': Error creating bean with name 'productRepo' defined in com.fitnessStore.backend.Repository.ProductRepo defined in @EnableMongoRepositories declared on MongoRepositoriesRegistrar.EnableMongoRepositoriesConfiguration: Did not find a query class com.fitnessStore.backend.Entity.QProductEntity for domain class com.fitnessStore.backend.Entity.ProductEntity
-
-my product entity
-
-package com.fitnessStore.backend.Entity;
-
-import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.querydsl.core.annotations.QueryEntity;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import org.bson.types.ObjectId;
-import org.springframework.data.annotation.Id;
-import org.springframework.data.mongodb.core.index.Indexed;
-import org.springframework.data.mongodb.core.mapping.DBRef;
-import org.springframework.data.mongodb.core.mapping.Document;
-
-import java.util.ArrayList;
-import java.util.List;
-
+    my cart entity
+    
 @Data
+@Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Builder
-@Document(collection = "product_entity")
-@QueryEntity
-public class ProductEntity {
+@Document(collection = "cart_entity")
+@EqualsAndHashCode(exclude = "user")
+public class CartEntity {
 
     @Id
-    private String id;
+    private ObjectId id;
 
-    @Indexed(unique = true)
+    @DBRef
+    @Field("user_id")
+    @JsonIgnore
+    private UserEntity user;
+
+    private List<CartItemClass> products;
+}
+
+my cart item class
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@Data
+@Component
+public class CartItemClass {
+
+    @DBRef
+    private ProductEntity product;
+
+    private String productId;
+
+    private int quantity;
+
+    private String size;
+
     private String title;
 
-    private String category;
-
-    private String brand;
+    private String image;
 
     private double price;
 
     private double salePrice;
 
-    private String description;
+    private String status;
 
-    private String image;
-
-    private int totalStock;
-
-    private double AverageReview= 0;
-
-    private double sumOfRatings = 0;
-
-    @DBRef
-    @JsonIgnore
-    private List<ReviewEntity> reviews;
+    private LocalDateTime deliveredAt;
 }
+ i am getting user from cookie token where as node js code was sending it again
